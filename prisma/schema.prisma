@@ -1,0 +1,518 @@
+// iSecurify GRC Platform — Prisma Schema
+// Multi-tenant Governance, Risk & Compliance data model
+// Provider: change to "mysql" for Coolify/production deployment
+// provider: "sqlite" for local development
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+//  TENANCY & RBAC
+// ============================================================
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  industry    String?
+  plan        String   @default("enterprise") // starter | business | enterprise
+  status      String   @default("active") // active | suspended | trial
+  contactName String?
+  contactEmail String?
+  contactPhone String?
+  address     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users        User[]
+  controls     ControlAssignment[]
+  evidence     Evidence[]
+  checklists   Checklist[]
+  vulnerabilities Vulnerability[]
+  risks        Risk[]
+  policies     Policy[]
+  audits       Audit[]
+  clients      Client[]
+  certificates Certificate[]
+  projects     Project[]
+  notifications Notification[]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          String    @default("employee") // super_admin | tenant_admin | compliance_officer | auditor | employee
+  status        String    @default("active") // active | disabled | invited
+  jobTitle      String?
+  department    String?
+  phone         String?
+  avatarUrl     String?
+  lastLoginAt   DateTime?
+  tenantId      String?
+  tenant        Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  evidence      Evidence[]
+  auditLogs     AuditLog[]
+  auditTasks    AuditTask[]
+  notifications Notification[]
+  policyApproved PolicyApproval[]
+  checklistAnswers ChecklistAnswer[]
+  passwordResets PasswordReset[]
+  certificates  Certificate[]
+  projects      Project[]
+
+  @@index([tenantId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ============================================================
+//  COMPLIANCE FRAMEWORKS & CONTROLS
+// ============================================================
+
+model Framework {
+  id          String   @id @default(cuid())
+  code        String   @unique // ISO27001 | SOC2 | GDPR | HIPAA | PCI_DSS
+  name        String
+  description String?
+  category    String?  // security | privacy | financial | healthcare
+  version     String?
+  icon        String?
+  controls    Control[]
+  checklists  Checklist[]
+  audits      Audit[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Control {
+  id          String   @id @default(cuid())
+  frameworkId String
+  framework   Framework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+  ref         String   // e.g. A.5.1, CC1.1
+  title       String
+  description String?
+  category    String?
+  guidance    String?
+  order       Int      @default(0)
+  assignments ControlAssignment[]
+  evidence    Evidence[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([frameworkId])
+}
+
+// Per-tenant control implementation status
+model ControlAssignment {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  controlId   String
+  control     Control  @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  status      String   @default("not_started") // not_started | in_progress | implemented | compliant | non_compliant
+  owner       String?
+  notes       String?
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, controlId])
+  @@index([tenantId])
+}
+
+// ============================================================
+//  EVIDENCE (files + links) — core compliance feature
+// ============================================================
+
+model Evidence {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  controlId   String?
+  control     Control? @relation(fields: [controlId], references: [id], onDelete: SetNull)
+  uploadedById String
+  uploadedBy  User     @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  // storage
+  type        String   // file | link
+  fileName    String?
+  filePath    String?  // relative path under /public/uploads OR disk
+  fileSize    Int?
+  mimeType    String?
+  fileUrl     String?  // for type=link OR generated download URL
+  linkTitle   String?
+  // metadata
+  tags        String?  // comma separated
+  status      String   @default("active") // active | archived | rejected | approved
+  validUntil  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, controlId])
+  @@index([uploadedById])
+}
+
+// ============================================================
+//  CHECKLISTS (compliance questionnaires)
+// ============================================================
+
+model Checklist {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  frameworkId String?
+  framework   Framework? @relation(fields: [frameworkId], references: [id], onDelete: SetNull)
+  title       String
+  description String?
+  status      String    @default("draft") // draft | in_progress | completed | archived
+  dueDate     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items   ChecklistItem[]
+  answers ChecklistAnswer[]
+}
+
+model ChecklistItem {
+  id          String   @id @default(cuid())
+  checklistId String
+  checklist   Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  question    String
+  hint        String?
+  type        String   @default("yes_no") // yes_no | text | rating | multiple
+  options     String?  // JSON encoded
+  required    Boolean  @default(true)
+  order       Int      @default(0)
+
+  answers ChecklistAnswer[]
+}
+
+model ChecklistAnswer {
+  id           String   @id @default(cuid())
+  checklistId  String
+  checklist    Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  itemId       String
+  item         ChecklistItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  value        String?
+  notes        String?
+  updatedAt    DateTime @updatedAt
+
+  @@unique([checklistId, itemId])
+}
+
+// ============================================================
+//  VULNERABILITIES
+// ============================================================
+
+model Vulnerability {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  severity    String   @default("medium") // critical | high | medium | low | info
+  status      String   @default("open") // open | in_progress | resolved | closed | false_positive
+  cvss        Float?
+  cve         String?
+  asset       String?
+  assignedTo  String?
+  dueDate     DateTime?
+  resolvedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+// ============================================================
+//  RISKS
+// ============================================================
+
+model Risk {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  title         String
+  description   String?
+  category      String?  // operational | strategic | financial | compliance | cyber
+  likelihood    Int      @default(3) // 1-5
+  impact        Int      @default(3) // 1-5
+  inherentScore Int?     // computed
+  residualScore Int?
+  treatment     String   @default("mitigate") // accept | mitigate | transfer | avoid
+  owner         String?
+  status        String   @default("identified") // identified | assessing | treating | monitored | closed
+  reviewDate    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+// ============================================================
+//  POLICIES
+// ============================================================
+
+model Policy {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  title       String
+  category    String?  // access_control | data_protection | incident | hr | physical
+  content     String
+  version     String   @default("1.0")
+  status      String   @default("draft") // draft | published | retired
+  owner       String?
+  approvedBy  String?
+  approvedAt  DateTime?
+  effectiveAt DateTime?
+  reviewDate  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  approvals PolicyApproval[]
+}
+
+model PolicyApproval {
+  id        String   @id @default(cuid())
+  policyId  String
+  policy    Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approved  Boolean
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([policyId, userId])
+}
+
+// ============================================================
+//  AUDITS
+// ============================================================
+
+model Audit {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  title       String
+  type        String    @default("internal") // internal | external | regulatory
+  frameworkId String?
+  framework   Framework? @relation(fields: [frameworkId], references: [id], onDelete: SetNull)
+  status      String    @default("planned") // planned | in_progress | completed | cancelled
+  lead        String?
+  scope       String?
+  startDate   DateTime
+  endDate     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tasks AuditTask[]
+}
+
+model AuditTask {
+  id          String   @id @default(cuid())
+  auditId     String
+  audit       Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  assigneeId  String?
+  assignee    User?    @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  status      String   @default("todo") // todo | in_progress | done | blocked
+  dueDate     DateTime?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([auditId])
+}
+
+// ============================================================
+//  AUDIT LOG & NOTIFICATIONS
+// ============================================================
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenantId  String?
+  action    String
+  entity    String?
+  entityId  String?
+  ip        String?
+  meta      String?  // JSON
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String   @default("info") // info | success | warning | error
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tenantId])
+}
+
+// ============================================================
+//  CLIENTS & CERTIFICATES (compliance certificate tracking)
+// ============================================================
+
+model Client {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  country   String?
+  state     String?
+  city      String?
+  createdAt DateTime @default(now())
+
+  certificates Certificate[]
+
+  @@index([tenantId])
+}
+
+model Certificate {
+  id                      String    @id @default(cuid())
+  tenantId                String
+  tenant                  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  clientId                String
+  client                  Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  complianceFramework     String
+  certificationVendor     String?
+  auditingPartner         String?
+  certificateNumber       String?
+  registrationDate        DateTime?
+  certificationDate       DateTime?
+  nextAuditDate           DateTime?
+  firstReminderDate       DateTime?
+  secondAuditDate         DateTime?
+  secondReminderDate      DateTime?
+  recertificationValidity DateTime?
+  nearestUpcomingDate     DateTime?
+  alertMessage            String?
+  status                  String    @default("Active") // Active | Completed | Expired | Pending
+  emailRecipients         String?
+  notes                   String?
+  certificateLink         String?
+  priceInr                Float?
+  priceUsd                Float?
+  createdById             String?
+  createdBy               User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  reminderLogs ReminderLog[]
+
+  @@index([tenantId])
+  @@index([clientId])
+}
+
+model ReminderLog {
+  id            String   @id @default(cuid())
+  certificateId String
+  certificate   Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+  reminderType  String   // first | second | manual
+  sentAt        DateTime @default(now())
+  recipients    String?
+  status        String   @default("sent") // sent | failed
+  errorMessage  String?
+
+  @@index([certificateId])
+}
+
+// ============================================================
+//  PROJECTS & TASKS (Gantt-style work tracker for ongoing
+//  compliance implementation projects — ISO 27001, SOC 2, etc.)
+// ============================================================
+
+model Project {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  title       String
+  type        String    @default("iso_27001") // iso_27001 | soc2 | gdpr | hipaa | pci_dss | custom
+  clientName  String?   // e.g. "Sansera Engineering Ltd." (the org being certified)
+  lead        String?   // project lead name
+  startDate   DateTime
+  endDate     DateTime?
+  status      String    @default("planned") // planned | in_progress | on_hold | completed | cancelled
+  progress    Int       @default(0) // 0-100, auto-computed from tasks but can be overridden
+  notes       String?
+  createdById String?
+  createdBy   User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tasks ProjectTask[]
+
+  @@index([tenantId])
+}
+
+model ProjectTask {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  phase        String   // e.g. "Project Initiation", "Gap Assessment", "Planning"
+  title        String
+  description  String?
+  owner        String?  // role/team, e.g. "CISO / Project Manager"
+  ownerName    String?  // individual name, e.g. "Krunal"
+  startDate    DateTime
+  endDate      DateTime
+  days         Int?     // duration in days (computed but stored for display)
+  deliverables String?  // key deliverables text
+  progress     Int      @default(0) // 0-100
+  order        Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([phase])
+}

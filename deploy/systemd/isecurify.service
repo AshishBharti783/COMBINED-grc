@@ -1,0 +1,51 @@
+# =============================================================
+#  iSecurify GRC Platform — Systemd Service File
+#  Copy to: /etc/systemd/system/isecurify.service
+#  Then:    sudo systemctl daemon-reload
+#           sudo systemctl enable isecurify
+#           sudo systemctl start isecurify
+#
+#  Architecture:
+#    Internet → Apache2 (:443 SSL) → Nginx (:8080) → Bun/Next.js (:3000) → MySQL (:3306)
+#  This unit runs the Bun/Next.js process on port 3000.
+# =============================================================
+
+[Unit]
+Description=iSecurify GRC Platform (Bun + Next.js standalone)
+Documentation=https://github.com/isecurify/isecurify-grc
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=isecurify
+Group=isecurify
+WorkingDirectory=/opt/isecurify
+EnvironmentFile=/opt/isecurify/.env
+
+# Bun runs the Next.js standalone server bundle produced by `next build`.
+# PORT=3000 is set in /opt/isecurify/.env (and defaults to 3000 in next.config.ts
+# output: 'standalone'). Nginx on 127.0.0.1:8080 proxies to this port.
+ExecStart=/usr/local/bin/bun /opt/isecurify/.next/standalone/server.js
+
+# Always restart on crash; back off 5s between attempts.
+Restart=always
+RestartSec=5
+
+# Send stdout/stderr to journald — view with:
+#   sudo journalctl -u isecurify -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=isecurify
+
+# Security hardening
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+# Graceful shutdown — give Next.js 15s to finish in-flight requests
+# before systemd sends SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
